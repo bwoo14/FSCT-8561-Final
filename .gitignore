@@ -1,2 +1,16 @@
 venv/
 staging/
+
+# Secrets - never commit
+users.json
+server.key
+
+# Python cache
+__pycache__/
+*/__pycache__
+
+# Decrypted evidence stored by the server
+server/received/
+
+# Logs
+server/server_log.csv

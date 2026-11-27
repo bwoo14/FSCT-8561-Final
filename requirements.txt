@@ -1,0 +1,8 @@
+# Python 3.12+ required (tested on 3.15)
+# Also install the nmap program itself (https://nmap.org) and make sure it is on PATH
+cryptography==50.0.2     # AES-256-GCM, X25519, HKDF, TLS certificate generation
+argon2-cffi==25.1.0      # Argon2id password hashing (server)
+pyotp==2.12.1            # TOTP (server + enroll.py)
+pillow==13.0.0           # reading evidence.png (photo_scan.py)
+python-nmap==0.7.1       # network discovery (tcp_scan.py)
+stepic==0.5.0            # optional: --cross-check in photo_scan.py
