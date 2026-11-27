@@ -1,6 +1,6 @@
 import socket
 from getpass import getpass
-from handle_auth import auth_mfa, auth_password
+from handle_auth import auth_mfa, auth_password, LoginBlocked
 from handle_command import handle_command, key_exchange
 from framing import FramingError, send_json, recv_json, RequiredServiceUnavailableError
 import os
@@ -115,6 +115,10 @@ try:
 except RequiredServiceUnavailableError as e:
 	print(f"\nERROR: Required service unavailable - {e}. Not connecting.")
 
+# Account locked / too many failed logins: the server already explained why, so just show it
+except LoginBlocked as e:
+	print(f"\nERROR: {e}. Connection closed by server.")
+
 # Handle case for offline server
 except ConnectionRefusedError:
 	print("\nERROR: Couldn't establish a connection to the target machine - closing")
@@ -130,7 +134,8 @@ except (socket.timeout, TimeoutError):
 		print("ERROR: Any evidence transfer in progress was NOT confirmed")
 
 # Connection dropped (under TLS a cut connection shows up as ssl.SSLError)
-except (ConnectionResetError, BrokenPipeError, FramingError, ssl.SSLError) as e:
+# (WinError 10053 = ConnectionAbortedError)
+except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, FramingError, ssl.SSLError) as e:
 	if STAGE == "connect":
 		print(f"\nERROR: Could not establish a secure connection: {e}")
 	elif STAGE == "auth":
