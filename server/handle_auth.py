@@ -59,6 +59,11 @@ def verify_otp(secret, otp):
 
 
 # ---- account lockout (time-limited, so it clears itself) ----
+# Failures are counted for ANY username, real or not. A locked message therefore can't be
+# used to find out which accounts exist: every username locks the same way.
+MAX_USERNAME_LEN = 64      # stops junk usernames from bloating the in-memory failure table
+
+
 def is_locked(username):
     rec = _failures.get(username)
     if not rec:
@@ -68,6 +73,11 @@ def is_locked(username):
     if rec["locked_until"]:          # lock has expired, start fresh
         del _failures[username]
     return False
+
+
+def lock_remaining(username):
+    """Whole seconds until the lock on this username expires."""
+    return max(1, int(_failures[username]["locked_until"] - time.monotonic() + 0.999))
 
 
 def record_failure(username):
@@ -82,14 +92,31 @@ def clear_failures(username):
     _failures.pop(username, None)
 
 
+def auth_fail(client_socket, session, username, reason, count=True):
+    """Single exit point for every auth failure.
+    The client only learns: generic failure, account locked, or that it is being disconnected.
+    The real reason goes to the server log."""
+    logging("INFO", f"{reason} from {session.address}")
+    session.failed_attempts += 1
+    if username is not None and count:
+        record_failure(username)
+
+    reply = dict(GENERIC_FAIL)
+    if username is not None and is_locked(username):
+        reply["message"] = (f"Account locked after {LOGIN_ATTEMPT_MAX} failed attempts. "
+                            f"Try again in {lock_remaining(username)} seconds")
+        reply["locked"] = True
+    if session.failed_attempts >= LOGIN_ATTEMPT_MAX:
+        if not reply.get("locked"):
+            reply["message"] = "Authentication failed - too many failed attempts"
+        reply["disconnect"] = True               # main.py closes the connection after this reply
+    send_json(client_socket, reply)
+
+
 # ---- step 1: username + password ----
 def auth_loop(client_socket, session, msg, users):
     username = msg.get("username")
     password = msg.get("password")
-    if not isinstance(username, str) or not isinstance(password, str):
-        send_json(client_socket, GENERIC_FAIL)
-        session.failed_attempts += 1
-        return
 
     # A new AUTH attempt always starts from zero: wipe any earlier login, token and key
     session.username = None
@@ -99,18 +126,23 @@ def auth_loop(client_socket, session, msg, users):
     session.key = None
     session.key_exchanged = False
 
+    if (not isinstance(username, str) or not isinstance(password, str)
+            or not username or len(username) > MAX_USERNAME_LEN):
+        auth_fail(client_socket, session, None, "Malformed AUTH message")
+        return
+
+    if is_locked(username):
+        # Don't count it again: that would keep pushing the unlock time back
+        auth_fail(client_socket, session, username, f"Login attempt on locked account '{username}'", count=False)
+        return
+
     user = users.get(username)
-    if user is None or is_locked(username):
-        logging("ERROR", f"Login rejected for unknown/locked user from {session.address}")
-        session.failed_attempts += 1
-        send_json(client_socket, GENERIC_FAIL)
+    if user is None:
+        auth_fail(client_socket, session, username, f"Login attempt for unknown user '{username}'")
         return
 
     if not verify_password(password, user["password_hash"]):
-        logging("INFO", f"Incorrect password for '{username}' from {session.address}")
-        record_failure(username)
-        session.failed_attempts += 1
-        send_json(client_socket, GENERIC_FAIL)
+        auth_fail(client_socket, session, username, f"Incorrect password for '{username}'")
         return
 
     session.username = username
@@ -121,25 +153,22 @@ def auth_loop(client_socket, session, msg, users):
 def otp_loop(client_socket, session, msg, users):
     otp = msg.get("otp")
     if not session.password_verified or session.username is None or not isinstance(otp, str):
-        session.failed_attempts += 1
-        send_json(client_socket, GENERIC_FAIL)
+        auth_fail(client_socket, session, None, "OTP sent before a valid password")
         return
 
     username = session.username
-    step = None if is_locked(username) else verify_otp(users[username]["totp_secret"], otp.strip())
+    if is_locked(username):
+        auth_fail(client_socket, session, username, f"OTP attempt on locked account '{username}'", count=False)
+        return
+
+    step = verify_otp(users[username]["totp_secret"], otp.strip())
     if step is None:
-        logging("INFO", f"OTP failure for '{username}' from {session.address}")
-        record_failure(username)
-        session.failed_attempts += 1
-        send_json(client_socket, GENERIC_FAIL)
+        auth_fail(client_socket, session, username, f"OTP failure for '{username}'")
         return
 
     # Replay protection: each code (time step) can be used ONCE per user, even while still valid
     if _last_otp_step.get(username, -1) >= step:
-        logging("INFO", f"OTP replay rejected for '{username}' from {session.address}")
-        record_failure(username)
-        session.failed_attempts += 1
-        send_json(client_socket, GENERIC_FAIL)
+        auth_fail(client_socket, session, username, f"OTP replay rejected for '{username}'")
         return
     _last_otp_step[username] = step
 

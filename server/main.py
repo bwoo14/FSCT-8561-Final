@@ -8,12 +8,13 @@ from framing import recv_json, send_json, FramingError, ConnectionClosed, Incomp
 
 import os
 import ssl
+import threading
 
 USE_TLS = os.environ.get("FSCT_USE_TLS", "1") != "0"   # set to 0 only for the T09 comparison test
 
 HOST = "127.0.0.1"
 PORT = 12345
-CLIENT_TIMEOUT = 30      # seconds of silence before a client is dropped
+CLIENT_TIMEOUT = 60      # seconds of silence before a client is dropped
 
 try:
     USERS = load_users()
@@ -98,26 +99,40 @@ def main():
     server_socket.listen(5)
     logging("INFO", f"Server listening on {HOST}:{PORT} (TLS {'on' if tls_context else 'OFF'})")
 
+    # On Windows, Ctrl+C can't interrupt a blocking accept()/recv(). So the server loop runs in a
+    # daemon thread and the main thread just waits; Ctrl+C lands in the main thread immediately,
+    # and the daemon thread is killed when the program exits.
+    server_thread = threading.Thread(target=serve, args=(server_socket, tls_context), daemon=True)
+    server_thread.start()
     try:
-        while True:
-            client_socket, client_address = server_socket.accept()
-            logging("INFO", f"Connected by: {client_address}")
-
-            if tls_context:
-                try:
-                    client_socket.settimeout(CLIENT_TIMEOUT)   # a stalled handshake can't hang the server
-                    client_socket = tls_context.wrap_socket(client_socket, server_side=True)
-                    logging("INFO", f"TLS established with {client_address}: {client_socket.version()}")
-                except (ssl.SSLError, OSError) as e:
-                    logging("ERROR", f"TLS handshake failed with {client_address}: {e}")
-                    client_socket.close()
-                    continue
-
-            handle_client(client_socket, client_address)
+        while server_thread.is_alive():
+            server_thread.join(0.5)
     except KeyboardInterrupt:
         logging("INFO", "Shutting down")
     finally:
         server_socket.close()
+
+
+def serve(server_socket, tls_context):
+    """Accept loop: one client at a time."""
+    while True:
+        try:
+            client_socket, client_address = server_socket.accept()
+        except OSError:
+            return                                      # listening socket was closed: shutting down
+        logging("INFO", f"Connected by: {client_address}")
+
+        if tls_context:
+            try:
+                client_socket.settimeout(CLIENT_TIMEOUT)   # a stalled handshake can't hang the server
+                client_socket = tls_context.wrap_socket(client_socket, server_side=True)
+                logging("INFO", f"TLS established with {client_address}: {client_socket.version()}")
+            except (ssl.SSLError, OSError) as e:
+                logging("ERROR", f"TLS handshake failed with {client_address}: {e}")
+                client_socket.close()
+                continue
+
+        handle_client(client_socket, client_address)
 
 
 if __name__ == "__main__":

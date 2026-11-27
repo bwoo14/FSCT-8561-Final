@@ -31,9 +31,9 @@ cert = (
     .sign(key, hashes.SHA256())
 )
 
-(CERT_DIR / "server.key").write_bytes(key.private_bytes(
+(CERT_DIR / "server_new.key").write_bytes(key.private_bytes(
     serialization.Encoding.PEM,
     serialization.PrivateFormat.PKCS8,
     serialization.NoEncryption()))
-(CERT_DIR / "server.crt").write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+(CERT_DIR / "server_new.crt").write_bytes(cert.public_bytes(serialization.Encoding.PEM))
 print("wrote certs/server.crt and certs/server.key")
