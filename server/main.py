@@ -99,9 +99,6 @@ def main():
     server_socket.listen(5)
     logging("INFO", f"Server listening on {HOST}:{PORT} (TLS {'on' if tls_context else 'OFF'})")
 
-    # On Windows, Ctrl+C can't interrupt a blocking accept()/recv(). So the server loop runs in a
-    # daemon thread and the main thread just waits; Ctrl+C lands in the main thread immediately,
-    # and the daemon thread is killed when the program exits.
     server_thread = threading.Thread(target=serve, args=(server_socket, tls_context), daemon=True)
     server_thread.start()
     try:
